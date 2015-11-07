@@ -51,3 +51,13 @@ class database(object):
     def record_parsing_error(self, url):
         key = url.replace('.', '-')
         self.ptt_articles.insert({'error_url': key, 'parse_error': True})
+
+    @staticmethod
+    def store_article(board, name, content):
+        with open('data/{}/{}'.format(board, name), 'w') as f:
+            f.write(content)
+
+    @staticmethod
+    def recording_error_page(board, name, content, error_type):
+        with open('exception/{}-{}-{}'.format(board, error_type, name), 'w') as f:
+            f.write(content)

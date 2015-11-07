@@ -22,7 +22,6 @@ db = lib.model.database()
 
 pendings = Queue()
 
-board_url = 'https://www.ptt.cc/bbs/{}/index{}.html'
 error_strings = [b'Internal Server Error', b'Service Temporarily Unavailable']
 
 TIMEOUT = 10.0
@@ -53,7 +52,7 @@ def downloader(downloader_num):
         # download page
         t1 = time.time()
         try:
-            raw_html = download(url)
+            html = download(url)
         except Exception as e:
             logging.debug('({}) download error at: {}'.format(downloader_num, url))
             add_requests([url])
@@ -63,7 +62,7 @@ def downloader(downloader_num):
             logging.warning('({}) long download time at ({}): {}'.format(downloader_num, t2, url))
 
         # error detection
-        if any(s in raw_html for s in error_strings):
+        if any(s in html for s in error_strings):
             logging.debug('server error occurred at: {}'.format(url))
             if 'index' in url:
                 # article list page
@@ -75,10 +74,10 @@ def downloader(downloader_num):
                     add_requests([url])
                 else:
                     logging.error('[{}] cannot download page: {}'.format(crawled_board, url))
-                    error_logging('download-{}'.format(parser.get_article_hash(url)), raw_html)
+                    db.recording_error_page(crawled_board, parser.get_article_hash(url), html, error_type='download')
             continue
 
-        spider(url, raw_html)
+        spider(url, html)
         gevent.sleep(WAIT_TIME)
 
     if crawled_page_num < max_page:
@@ -89,12 +88,12 @@ def downloader(downloader_num):
             finish_first = False
 
 
-def spider(url, raw_html):
+def spider(url, html):
     is_err = False
     if 'index' in url:
         # article list page
         page_num = parser.get_page_num(url)
-        links, is_last = parser.get_article_url_list(raw_html)
+        links, is_last = parser.get_article_url_list(html)
 
         # filter repeat url
         t1 = time.time()
@@ -110,7 +109,7 @@ def spider(url, raw_html):
                     add_requests([url])
                 else:
                     logging.error('[{}] cannot find next page url. max={}. current={}'.format(crawled_board, max_page, page_num))
-                    error_logging('download-{}.html'.format(page_num), raw_html)
+                    db.recording_error_page(crawled_board, '{}.html'.format(page_num), html, error_type='download')
                     done = True
             else:
                 done = True
@@ -125,11 +124,11 @@ def spider(url, raw_html):
         # article page
         try:
             t1 = time.time()
-            j = parser.get_article_json(raw_html)
-            pipeline(parser.get_article_hash(url), j)
+            j = parser.get_article_json(html)
+            db.store_article(crawled_board, parser.get_article_hash(url), j)
         except Exception as e:
             logging.debug('parsing error at ({}): {}'.format(e, url))
-            error_logging('parse-{}'.format(parser.get_article_hash(url)), raw_html)
+            db.recording_error_page(crawled_board, parser.get_article_hash(url), html, error_type='parsing')
             is_err = True
             db.record_parsing_error(url)
 
