@@ -145,16 +145,6 @@ def spider(url, html):
             logging.info('[{}] crawling rate: {} pages/second'.format(crawled_board, rate))
 
 
-def pipeline(name, content):
-    with open('data/{}/{}'.format(crawled_board, name), 'w') as f:
-        f.write(content)
-
-
-def error_logging(name, content):
-    with open('exception/{}-{}'.format(crawled_board, name), 'wb') as f:
-        f.write(content)
-
-
 def add_requests(urls):
     for u in urls:
         pendings.put(u)

@@ -59,5 +59,5 @@ class database(object):
 
     @staticmethod
     def recording_error_page(board, name, content, error_type):
-        with open('exception/{}-{}-{}'.format(board, error_type, name), 'w') as f:
-            f.write(content)
+        with open('exception/{}-{}-{}'.format(board, error_type, name), 'wb') as f:
+            f.write(content.encode('utf-8'))
