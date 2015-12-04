@@ -17,17 +17,14 @@ requests.packages.urllib3.disable_warnings()
 import lib.ptt_parser as parser
 import lib.model
 
-
-db = lib.model.database()
+error_strings = ['Internal Server Error', 'Service Temporarily Unavailable']
 
 pendings = Queue()
-
-error_strings = [b'Internal Server Error', b'Service Temporarily Unavailable']
 
 TIMEOUT = 10.0
 WAIT_TIME = 1.0
 LONG_DOWNLOAD_TIME = 10.0
-ANALYTICS_PERIOD = 60.0
+ANALYSIS_PERIOD = 600.0
 
 
 def download(url):
@@ -37,112 +34,122 @@ def download(url):
 
 
 def downloader(downloader_num):
-    global finish_first
-    finish_first = True
+    global first, done
+    first = True
 
     while not (done and pending.empty()):
-        # get url from pending queue
+        # get the url from pending queue
         try:
-            url = pendings.get(timeout=TIMEOUT)
+            metadata = pendings.get(timeout=TIMEOUT)
+            if not isinstance(metadata, basestring):
+                url = metadata[0]
+            else:
+                url = metadata
+                metadata = None
         except:
             gevent.sleep(WAIT_TIME)
             continue
-        print('\t({}) {}'.format(downloader_num, url))
+        print('\t[{}] {}'.format(downloader_num, url))
 
-        # download page
+        # download the page
         t1 = time.time()
         try:
             html = download(url)
-        except Exception as e:
-            logging.debug('({}) download error at: {}'.format(downloader_num, url))
+            if not html:
+                raise Exception('got empty page')
+        except:
             add_requests([url])
             continue
         t2 = time.time() - t1
         if t2 > LONG_DOWNLOAD_TIME:
-            logging.warning('({}) long download time at ({}): {}'.format(downloader_num, t2, url))
+            logging.warning('[{}] long download time ({}): {}'.format(downloader_num, t2, url))
 
         # error detection
         if any(s in html for s in error_strings):
-            logging.debug('server error occurred at: {}'.format(url))
-            if 'index' in url:
-                # article list page
-                if parser.get_page_num(url) <= max_page:
-                    add_requests([url])
+            logging.debug('server error occurred: {}'.format(url))
+            if db.should_retry(url):
+                add_requests([url])
             else:
-                # article page
-                if db.retry_ok(url):
-                    add_requests([url])
-                else:
-                    logging.error('[{}] cannot download page: {}'.format(crawled_board, url))
-                    db.recording_error_page(crawled_board, parser.get_article_hash(url), html, error_type='download')
+                logging.error('[{}] cannot download page: {}'.format(current_board, url))
+                done = True if 'index' in url else False
             continue
 
-        spider(url, html)
+        spider(url, html, metadata)
         gevent.sleep(WAIT_TIME)
 
-    if crawled_page_num < max_page:
-        logging.error('[{}] finish crawling before done, max={}, crawled={}'.format(crawled_board, max_page, crawled_page_num))
+    if current_page < max_page:
+        logging.error('[{}] finish crawling before crawling all articles ({}, {})'.format(current_board, max_page, current_page))
     else:
-        if finish_first:
-            logging.info('[{}] crawling complete. execution time: {}. page size: {}'.format(crawled_board, time.time()-start_time, page_count))
-            finish_first = False
+        if first:
+            logging.info('[{}] crawling complete. execution time: {}. crawled page number: {}'.format(current_board, time.time()-start_time, page_count))
+            first = False
 
 
-def spider(url, html):
-    is_err = False
+def spider(url, html, metadata):
+    err_occured = False
+    parsing_time = None
+    db_access_time = None
     if 'index' in url:
         # article list page
         page_num = parser.get_page_num(url)
-        links, is_last = parser.get_article_url_list(html)
+        article_tuple_list, is_last_page = parser.get_article_urls(html)
 
-        # filter repeat url
-        t1 = time.time()
-        urls = db.filter_repeat_pages(links)
-        add_requests(urls)
-        logging.info('[{}] db access time: {}'.format(crawled_board, time.time() - t1))
+        # doesn't check whether the url is crawled repeatly
+        add_requests(article_tuple_list)
 
-        # check if the crawling is complete
-        if is_last:
-            global done
+        # check whether the crawling is complete
+        if is_last_page:
             if page_num < max_page:
-                if db.retry_ok(url):
-                    add_requests([url])
-                else:
-                    logging.error('[{}] cannot find next page url. max={}. current={}'.format(crawled_board, max_page, page_num))
-                    db.recording_error_page(crawled_board, '{}.html'.format(page_num), html, error_type='download')
-                    done = True
-            else:
-                done = True
+                h = db.record_error(current_board, url, html)
+                logging.error('[{}] cannot find the url of next page ({}, {}): {}'.format(current_board, max_page, page_num, h))
+            global done
+            done = True
 
-        # record crawled page number
-        global crawled_page_num
-        if crawled_page_num >= page_num:
-            logging.error('repeated crawling index page at: {}'.format(url))
-        crawled_page_num = page_num
-        db.set_crawled_page_num(crawled_board, page_num)
+        # update crawled page number
+        global current_page
+        current_page = page_num
+        db.save_current_page_num(current_board, current_page)
     else:
         # article page
-        try:
-            t1 = time.time()
-            j = parser.get_article_json(html)
-            db.store_article(crawled_board, parser.get_article_hash(url), j)
-        except Exception as e:
-            logging.debug('parsing error at ({}): {}'.format(e, url))
-            db.recording_error_page(crawled_board, parser.get_article_hash(url), html, error_type='parsing')
-            is_err = True
-            db.record_parsing_error(url)
+        if metadata is None:
+            logging.error('article metadata is empty: {}'.format(url))
+            err_occured = True
+        else:
+            try:
+                # parse the article
+                t1 = time.time()
+                j = parser.parse_article(html, metadata)
+                filename = db.record_article(current_board, url, html)
+                parsing_time = time.time() - t1
 
-    # analytics
-    if not is_err:
-        global timer, page_count, previous_page_count
+                # insert the article metadata into the database
+                t1 = time.time()
+                article_id = db.insert_article(current_board, j, filename)
+                if not article_id:
+                    raise Exception('fail to insert the article into the database')
+                db.insert_pushs(article_id, j['pushs'])
+                db_access_time = time.time() - t1
+            except Exception as e:
+                print(e)
+                logging.debug('{}: {}'.format(e, url))
+                db.record_error(current_board, url, html)
+                err_occured = True
+
+    # analysis
+    if not err_occured:
+        global timer, page_count, prev_page_count
         page_count += 1
 
-        diff = time.time() - timer
-        if diff > ANALYTICS_PERIOD:
-            rate = (page_count-previous_page_count)/diff
+        dif = time.time() - timer
+        if dif > ANALYSIS_PERIOD:
+            rate = (page_count-prev_page_count) / dif
             timer = time.time()
-            previous_page_count = page_count
-            logging.info('[{}] crawling rate: {} pages/second'.format(crawled_board, rate))
+            prev_page_count = page_count
+            logging.info('[{}] crawling rate: {} pages/s'.format(current_board, rate))
+
+            if parsing_time and db_access_time:
+                logging.info('[{}] parsing time: {}'.format(current_board, parsing_time))
+                logging.info('[{}] database access time: {}'.format(current_board, db_access_time))
 
 
 def add_requests(urls):
@@ -152,57 +159,83 @@ def add_requests(urls):
 
 def crawl(board, downloader_num):
     # init
-    global crawled_board, start_time, max_page, crawled_page_num, done
-    crawled_board = board
-    start_time = time.time()
+    global current_board, current_page, max_page, done
+    current_board = board
     done = False
 
-    # variable for analytics
-    global timer, page_count, previous_page_count
+    # analytical variable
+    global timer, start_time, page_count, prev_page_count
     timer = time.time()
+    start_time = time.time()
     page_count = 0
-    previous_page_count = 0
+    prev_page_count = 0
 
     # find max page number
     try:
-        max_page = parser.get_max_page(board)
+        max_page = parser.get_max_page(current_board)
     except:
-        logging.error('fail to get max page of board: {}'.format(board))
+        logging.error('[{}] fail to get the max page number'.format(current_board))
         return
 
     # create a folder to store the articles
     try:
-        os.mkdir('data/{}'.format(board))
+        os.mkdir('data/{}'.format(current_board))
+        os.mkdir('db/{}'.format(current_board))
     except:
         pass
 
-    # start from the page stopped last time
-    crawled_page_num = db.get_crawled_page_num(board)
-    if crawled_page_num > max_page:
-        logging.error('[{}] exceed max page, max={}, crawled={}'.format(board, max_page, crawled_page_num))
+    # choose the proper page to start crawling
+    page_num = db.get_crawled_page(current_board)
+    if page_num > max_page:
+        logging.error('[{}] exceed max page number ({}, {})'.format(current_board, max_page, current_page))
         return
-    url = parser.get_board_url(board, crawled_page_num)
+    elif page_num < max_page:
+        current_page = page_num
+    else:
+        # start to update the articles
+        current_page = parser.find_updated_page(page_num)
 
+    url = parser.get_board_url(current_board, current_page)
     add_requests([url])
+
     threads = [gevent.spawn(downloader, i+1) for i in xrange(downloader_num)]
     gevent.joinall(threads)
+    db.clear_cache()
 
 
 def graceful_reload(signum, traceback):
-    # Explicitly close some global MongoClient object
+    global db
     db.close()
 
 
 def main():
-    d = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d')
-    logging.basicConfig(filename='log/{}.log'.format(d), format='[%(levelname)s] %(message)s', level=logging.INFO)
+    today = None
+    logging.basicConfig(filename='log/{}.log'.format(datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d')),
+                        format='[%(levelname)s] %(message)s',
+                        level=logging.INFO)
     logging.getLogger("requests").setLevel(logging.ERROR)
+
+    global db
+    try:
+        db = lib.model.database('ptt', 'ptt')
+    except:
+        print('cannot connect to the database.')
+        return
     signal.signal(signal.SIGHUP, graceful_reload)
 
-    boards = parser.get_hot_boards()
-    for b in boards:
-        print('crawling board: {}'.format(b))
-        crawl(b, downloader_num=8)
+    while True:
+        # start crawling when the date is changed
+        t = datetime.datetime.fromtimestamp(time.time()).strftime('%m-%d')
+        if today != t:
+            today = t
+        else:
+            time.sleep(3600)
+            continue
+
+        boards = parser.get_hot_boards()
+        for b in boards:
+            print('crawling board: {}'.format(b))
+            crawl(b, downloader_num=10)
 
 
 if __name__ == '__main__':

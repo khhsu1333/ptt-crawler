@@ -1,6 +1,5 @@
 # coding=utf-8
 import re
-import json
 import logging
 
 import requests
@@ -8,7 +7,6 @@ from pyquery import PyQuery as pq
 
 
 host_url = 'https://www.ptt.cc'
-board_url = 'https://www.ptt.cc/bbs/{}/index{}.html'
 
 re_page_num = re.compile(r'index(\d+).html')
 re_ip = re.compile(r'\d+\.\d+\.\d+\.\d+')
@@ -24,7 +22,13 @@ def get_max_page(board):
     return int(re_page_num.search(link).group(1))+1
 
 
+def find_updated_page(page_num):
+    # TODO: use hashed content to find the updated page
+    return page_num
+
+
 def get_board_url(board, index=''):
+    board_url = 'https://www.ptt.cc/bbs/{}/index{}.html'
     return board_url.format(board, index)
 
 
@@ -50,54 +54,60 @@ def get_hot_boards():
     return boards
 
 
-
-def get_article_url_list(raw_html):
+def get_article_urls(html):
     urls = []
-    is_last = False
+    is_last_page = False
 
-    d = pq(raw_html)
-    for link in d('.title a').map(lambda: host_url + pq(this).attr('href')):
-        urls.append(link)
+    d = pq(html)
+    for block in d('.r-ent'):
+        b = pq(block)
+        # 標題
+        title = b('.title').text()
+        article_url = b('.title a').attr('href')
+        if not article_url:
+            continue
+        url = host_url + article_url
+        # 日期
+        date = b('.date').text()
+        # 作者
+        author = b('.author').text()
+        urls.append((url, title, author, date))
 
     next_page = d('.pull-right a').eq(2).attr('href')
     if next_page:
         urls.append(host_url + next_page)
     else:
-        is_last = True
+        is_last_page = True
 
-    return (urls, is_last)
+    return (urls, is_last_page)
 
 
-def get_article_json(raw_html):
-    d = pq(raw_html)
+def parse_article(html, metadata):
+    d = pq(html)
 
-    items = []
-    for c in d('.article-meta-value'):
-        items.append(c.text)
+    content = d('#main-content').clone().children().remove().end().text()
 
-    if len(items) == 4:
-        author = items[0]
-        title = items[2]
-        date = items[3]
-    elif len(items) == 3:
-        author = items[0]
-        title = items[1]
-        date = items[2]
-    else:
-        raise Exception('fail to parse article header, length: {}'.format(len(items)))
+    pushs = d('div.push').map(lambda:{
+            'tag': pq(this)('.push-tag').text(),
+            'uid': pq(this)('.push-userid').text(),
+            'content': pq(this)('.push-content').text().replace(': ', '')
+        })
 
-    m = re_ip.search(d.text())
-    if m:
-        ip = m.group()
-    else:
-        raise Exception('fail to find author ip')
+    score = 0
+    for p in pushs:
+        if p['tag'] == u'推':
+            score += 1
+            p['tag'] = 1
+        elif p['tag'] == u'噓':
+            score -= 1
+            p['tag'] = -1
+        else:
+            p['tag'] = 0
 
-    #a = d('#main-container').html()
-    #a = a.split("</div>")
-    #a = a[4].split('<span class="f2">※ 發信站: 批踢踢實業坊(ptt.cc),')
-    #content = a[0]
-
-    content = d.text()
-
-    j = dict(aid=1, author=author, title=title, date=date, ip=ip, content=content)
-    return json.dumps(j)
+    return dict(url=metadata[0],
+                title=metadata[1],
+                author=metadata[2],
+                date=metadata[3],
+                content=content,
+                pushs=pushs,
+                score=score)
