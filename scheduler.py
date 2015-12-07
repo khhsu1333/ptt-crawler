@@ -37,7 +37,7 @@ def downloader(downloader_num):
     global first, done
     first = True
 
-    while not (done and pending.empty()):
+    while not (done and pendings.empty()):
         # get the url from pending queue
         try:
             metadata = pendings.get(timeout=TIMEOUT)
@@ -187,7 +187,7 @@ def crawl(board, downloader_num):
     # choose the proper page to start crawling
     page_num = db.get_crawled_page(current_board)
     if page_num > max_page:
-        logging.error('[{}] exceed max page number ({}, {})'.format(current_board, max_page, current_page))
+        logging.error('[{}] exceed max page number ({}, {})'.format(current_board, max_page, page_num))
         return
     elif page_num < max_page:
         current_page = page_num
