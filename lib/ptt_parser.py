@@ -111,3 +111,10 @@ def parse_article(html, metadata):
                 content=content,
                 pushs=pushs,
                 score=score)
+
+if __name__ == '__main__':
+    url = 'https://www.ptt.cc/bbs/Japan_Travel/index1204.html'
+    html = requests.get(url, cookies=dict(over18='1')).text
+    urls, is_last = get_article_urls(html)
+    for u in urls:
+        pass

@@ -41,7 +41,7 @@ def downloader(downloader_num):
         # get the url from pending queue
         try:
             metadata = pendings.get(timeout=TIMEOUT)
-            if not isinstance(metadata, basestring):
+            if len(metadata[0]) > 1:
                 url = metadata[0]
             else:
                 url = metadata
