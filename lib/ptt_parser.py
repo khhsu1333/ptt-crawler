@@ -54,7 +54,7 @@ def get_hot_boards():
     return boards
 
 
-def get_article_urls(html):
+def get_url_of_articles(html):
     urls = []
     is_last_page = False
 
@@ -65,6 +65,7 @@ def get_article_urls(html):
         title = b('.title').text()
         article_url = b('.title a').attr('href')
         if not article_url:
+            print('cannot get url: {}'.format(title))
             continue
         url = host_url + article_url
         # 日期
